@@ -2,64 +2,78 @@
 images_folder = "Images"
 masks_folder = "Label_images"
 
-img_list = sorted(os.listdir(images_folder))
-labels_list = sorted(os.listdir(masks_folder))
+# Define parameters
 n_channels = 2
 crop_h = 512  # crop height
 crop_w = 512  # crop width
+
+# Create empty lists for input data
 img_inp = []
 lbl_inp = []
-for img_name, lbl_name in zip(img_list, labels_list):
-    img_tmp = tifffile.imread(os.path.join(images_path, img_name))
-    img_tmp_rs = np.moveaxis(img_tmp, 0, -1)  # Reshape the original image to have height X width X n_channels
-    img_tmp_rs = img_tmp_rs[:, :, :2]  # prendiamo solo le prime due immagini (BSE e CL)
-    
-    # normalize_images
-    img_tmp_norm = img_tmp_rs.copy()
-    img_tmp_norm[:, :, 0] = cv2.normalize(img_tmp_rs[:, :, 0], None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX,
-                                         dtype=cv2.CV_32F)
-    img_tmp_norm[:, :, 1] = cv2.normalize(img_tmp_rs[:, :, 1], None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX,
-                                          dtype=cv2.CV_32F)
-   
-    # Divide each image in patches of size 512x512
-    patches_img = patchify(img_tmp_rs, (crop_h, crop_w, n_channels), step=512)
-    patches_img_rs = np.reshape(patches_img, (-1, crop_h, crop_w, n_channels))
-    tmp_img_list = list(patches_img_rs)
-    img_inp.extend(tmp_img_list)
-    
-    # Labels
-    lbl_tmp = h5py.File(os.path.join(labels_path, lbl_name))
-    key = list(lbl_tmp.keys())
-    # print(key)
-    lbl_tmp = lbl_tmp[key[0]][()]  # Ci prendiamo i dati
-    # print(f'label_shape is {len(lbl_tmp.shape)}')
-    if len(lbl_tmp.shape) > 2:
-        lbl_tmp = lbl_tmp.reshape((lbl_tmp.shape[1], lbl_tmp.shape[2]))
-    lbl_tmp[lbl_tmp >= 4] = 4.
-    labelencoder = LabelEncoder()
-    h, w = lbl_tmp.shape
-    lbl_tmp_reshaped = lbl_tmp.reshape(-1, )
-    lbl_tmp_reshaped_encoded = labelencoder.fit_transform(lbl_tmp_reshaped)
-    lbl_tmp_encoded_original_shape = lbl_tmp_reshaped_encoded.reshape(h, w)
-    
-    patches_lbl = patchify(lbl_tmp_encoded_original_shape, (crop_h, crop_w), step=512)
-    patches_lbl_rs = np.reshape(patches_lbl, (-1, crop_h, crop_w))
-    tmp_lbl_list = list(patches_lbl_rs)
-    lbl_inp.extend(tmp_lbl_list)
-    
-    # Image Augmentation Section
-    aug = A.Compose([A.RandomCrop(width=512, height=512),
-          A.VerticalFlip(p=0.5), 
-          A.HorizontalFlip(p=0.5),
-          A.Rotate(p=0.7)])
 
-    for i in range(5):
-        augmented = aug(image=img_tmp_rs, mask=lbl_tmp_encoded_original_shape)
-        image_aug = augmented['image']
-        mask_aug = augmented['mask']
-        img_inp.append(image_aug)
-        lbl_inp.append(mask_aug)
-        
+# Loop over all image and label files in the directories
+for img_name, lbl_name in zip(sorted(os.listdir(images_path)), sorted(os.listdir(labels_path))):
+    # Load and preprocess image
+    img_tmp = tifffile.imread(os.path.join(images_path, img_name))
+    img_tmp_rs = np.moveaxis(img_tmp, 0, -1)[:, :, :n_channels]
+    img_tmp_norm = np.empty_like(img_tmp_rs)
+    for i in range(n_channels):
+        img_tmp_norm[:, :, i] = cv2.normalize(img_tmp_rs[:, :, i], None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+    # Create image patches
+    patches_img = patchify(img_tmp_rs, (crop_h, crop_w, n_channels), step=512)
+    patches_img_rs = patches_img.reshape(-1, crop_h, crop_w, n_channels)
+    img_inp.extend(patches_img_rs.tolist())
+    
+    # Load and preprocess label
+    lbl_tmp = h5py.File(os.path.join(labels_path, lbl_name))[list(h5py.File(os.path.join(labels_path, lbl_name)).keys())[0]][()]
+    lbl_tmp = np.where(lbl_tmp >= 4, 4, lbl_tmp)
+    if len(lbl_tmp.shape) > 2:
+        lbl_tmp = lbl_tmp.squeeze()
+    lbl_tmp_reshaped_encoded = LabelEncoder().fit_transform(lbl_tmp.ravel())
+    lbl_tmp_encoded_original_shape = lbl_tmp_reshaped_encoded.reshape(lbl_tmp.shape)
+    # Create label patches
+    patches_lbl = patchify(lbl_tmp_encoded_original_shape, (crop_h, crop_w), step=512)
+    patches_lbl_rs = patches_lbl.reshape(-1, crop_h, crop_w)
+    lbl_inp.extend(patches_lbl_rs.tolist())
+
+# Convert input data to NumPy arrays
 img_inp_arr = np.array(img_inp)
 lbl_inp_arr = np.array(lbl_inp)
 
+# Split data into train and test sets
+x_train, x_test, y_train, y_test = train_test_split(img_inp_arr, lbl_inp_arr, test_size=0.2, random_state=42)
+
+
+# Data Augmentation
+if data_augmentation:
+    # Create a list of augmentation transformations to apply
+    transforms = A.Compose([A.VerticalFlip(p=0.5), 
+                            A.HorizontalFlip(p=0.5),
+                            A.Rotate(p=0.7),                        
+                            A.RandomBrightnessContrast(p=0.2)
+                           ])
+    
+    # Create empty lists to store the augmented images
+    x_train_aug = []
+    y_train_aug = []
+    
+    aug_level = 5
+    # Generate and save augmented images to x_train_aug and y_train_aug
+    for i in range(len(x_train)):
+        for j in range(aug_level):
+        # Apply the augmentations to the image and mask
+            augmented = transforms(image=x_train[i], mask=y_train[i])
+            x_aug = augmented['image']
+            y_aug = augmented['mask']
+        
+            # Append the augmented image and mask to the respective lists
+            x_train_aug.append(x_aug)
+            y_train_aug.append(y_aug)
+    
+    # Convert the lists to NumPy arrays
+    x_train_aug = np.array(x_train_aug)
+    y_train_aug = np.array(y_train_aug)
+
+else:
+    x_train_aug = x_train
+    y_train_aug = y_train
