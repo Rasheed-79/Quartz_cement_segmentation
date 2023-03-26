@@ -1,2 +1,2 @@
-# Quartz_cement_segmentation
+# Quartz cement segmentation
 Repo for segmentation of Quartz sandstone images
