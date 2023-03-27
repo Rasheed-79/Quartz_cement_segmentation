@@ -1,4 +1,5 @@
-'''This file upload all the needed functions and performs a unet segmentation on the sandstone images dataset'''
+'''This script upload all the needed functions and performs a unet segmentation on the sandstone images dataset 
+   and plots the confusion matrix obtained on the test dataset'''
 import Functions/data_prep.py as data_prep
 import Functions/multi_unet_model.py as multi_unet_model
 import Functions/training_model.py as training_model
